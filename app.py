@@ -1,136 +1,197 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder
+from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.metrics import roc_auc_score, roc_curve
-import os
+from xgboost import XGBClassifier
+from sklearn.metrics import accuracy_score, classification_report
+from imblearn.over_sampling import SMOTE  # Untuk mengatasi imbalance kelas (jika diperlukan)
 
-# Load data (ensure 'adult.csv' and 'adult.test.csv' are in the same directory as app.py or provide full paths)
+# --- Konfigurasi Halaman ---
+st.set_page_config(layout="wide")
+st.markdown(
+    """
+    <style>
+    [data-testid="stSidebar"] {
+        display: none !important;
+    }
+    [data-testid="stAppViewContainer"] {
+        overflow: hidden; /* Untuk mencegah scrollbar akibat footer */
+    }
+    .footer {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        background-color: transparent;
+        color: black; /* Atau warna lain yang sesuai dengan tema Anda */
+        text-align: left;
+        padding: 10px;
+        font-size: small;
+        z-index: 9999; /* Pastikan di atas elemen lain */
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+# --- End Konfigurasi Halaman ---
+
+# Load data
 try:
     train_data = pd.read_csv("adult.csv")
     test_data = pd.read_csv("adult.test.csv")
 except FileNotFoundError:
-    st.error("Error: 'adult.csv' or 'adult.test.csv' not found. Please ensure they are in the same directory as app.py.")
+    st.error("Error: 'adult.csv' or 'adult.test.csv' not found.")
     st.stop()
 
-
-# Data Preprocessing
+# Preprocessing
 columns = train_data.columns
 test_data.columns = columns
 df = pd.concat([train_data, test_data], axis=0)
-
 for col in columns:
-    if df[col].dtype in ['O']:
+    if df[col].dtype == 'object':
         df[col] = df[col].str.strip()
-
-df.replace("?'", np.nan, inplace=True)
-df[df['Workclass'] == 'Never-worked'] = df[df['Workclass'] == 'Never-worked'].fillna('No-occupation')
-df['Native Country'].fillna('United-States', inplace=True)
+df.replace("?", np.nan, inplace=True)
+df['Workclass'] = df['Workclass'].fillna('Unknown')
+df['Native Country'] = df['Native Country'].fillna('United-States')
 df.dropna(inplace=True)
-df.drop(columns=['Capital Gain', 'capital loss', 'Native Country'], inplace=True)
+df.drop(columns=['Capital Gain', 'capital loss', 'Education'], inplace=True)
 df.replace({'Income': {">50K.": ">50K", "<=50K.": "<=50K"}}, inplace=True)
-
-mask = df['Final Weight'] > 0.6 * 1000000
-df.loc[mask, 'Final Weight'] = np.ceil(df['Final Weight'].mean())
-
-
-def label_encoder(dataframe, binary_col):
-    labelencoder = LabelEncoder()
-    dataframe[binary_col] = labelencoder.fit_transform(dataframe[binary_col])
-    return dataframe
-
 for col in ['Income', 'Gender']:
-    df = label_encoder(df, col)
-
-def one_hot_encoder(dataframe, categorical_cols, drop_first=True):
-    encoded_data = dataframe.copy()
-    for col in categorical_cols:
-        dumm = pd.get_dummies(dataframe[col], prefix=col, dtype=int, drop_first=drop_first)
-        del encoded_data[col]
-        encoded_data = pd.concat([encoded_data, dumm], axis=1)
-    return encoded_data
-
-categorical_cols_to_encode = ['Workclass', 'Education', 'Marital Status', 'Occupation', 'Relationship', 'Race']
-df = one_hot_encoder(df, categorical_cols_to_encode)
-
-X = df.drop("Income", axis=1)
-y = df["Income"]
-
+    le = LabelEncoder()
+    df[col] = le.fit_transform(df[col])
+df = pd.get_dummies(df, columns=['Workclass', 'Marital Status', 'Occupation', 'Relationship', 'Race', 'Native Country'], drop_first=True)
+X = df.drop('Income', axis=1)
+y = df['Income']
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
+# Tangani Imbalance Kelas (SMOTE - Oversampling kelas minoritas)
+# Aktifkan bagian ini jika distribusi kelas sangat tidak seimbang
+try:
+    smote = SMOTE(random_state=42)
+    X_train_resampled, y_train_resampled = smote.fit_resample(X_train, y_train)
+    X_train_for_model = X_train_resampled
+    y_train_for_model = y_train_resampled
+    # st.write("Menggunakan SMOTE untuk mengatasi imbalance kelas.")
+except ImportError:
+    X_train_for_model = X_train
+    y_train_for_model = y_train
+    st.warning("Library imbalanced-learn tidak terinstal. Tidak dapat menggunakan SMOTE.")
+
+# Train model
+xgb_model = XGBClassifier(random_state=42)
+xgb_model.fit(X_train_for_model, y_train_for_model)
+
+# Evaluasi Model pada Data Uji (dipindahkan ke sini)
+y_pred = xgb_model.predict(X_test)
+accuracy = accuracy_score(y_test, y_pred)
+report = classification_report(y_test, y_pred)
+
 # Streamlit App
-st.title("Census Income Prediction")
+st.title("Census Income Prediction using XGBoost")
+st.subheader("Kelompok 5 - RAYAN")
+# Initialize session state for default values
+if 'age' not in st.session_state:
+    st.session_state['age'] = int(train_data['Age'].mean())
+if 'education_level' not in st.session_state:
+    st.session_state['education_level'] = "Bachelors"
+if 'hours_per_week' not in st.session_state:
+    st.session_state['hours_per_week'] = int(train_data[[col for col in train_data.columns if 'Hours' in col and 'Week' in col][0]].mean())
+if 'occupation' not in st.session_state:
+    st.session_state['occupation'] = sorted(train_data['Occupation'].unique().tolist())[0]
+if 'marital_status' not in st.session_state:
+    st.session_state['marital_status'] = sorted(train_data['Marital Status'].unique().tolist())[0]
+if 'relationship' not in st.session_state:
+    st.session_state['relationship'] = sorted(train_data['Relationship'].unique().tolist())[0]
 
-# Sidebar for Model Parameters
-st.sidebar.header("Model Parameters")
-max_depth = st.sidebar.slider("Max Depth:", min_value=1, max_value=50, value=40)
+# Layout using columns to center the input form
+col1, col2, col3 = st.columns([1, 2, 1])
 
-# Sidebar for Input Features (Example)
-st.sidebar.header("Input Features for Prediction")
-age = st.sidebar.slider("Age:", min_value=int(train_data['Age'].min()), max_value=int(train_data['Age'].max()), value=int(train_data['Age'].mean()))
-hours_per_week = st.sidebar.slider("Hours per Week:", min_value=1, max_value=99, value=40)
+with col2:
+    st.subheader("Input Features for Prediction")
+    age = st.number_input("Age:", min_value=int(train_data['Age'].min()), max_value=int(train_data['Age'].max()), value=st.session_state['age'], key='age_input')
 
-# Create selectbox widgets for one-hot encoded categorical features
-workclass_cols = [col for col in df.columns if col.startswith('Workclass_')]
-selected_workclass = st.sidebar.selectbox("Workclass", workclass_cols)
+    # Dropdown untuk Education Level
+    education_map = {
+        "Preschool": 1, "1st-4th": 2, "5th-6th": 3, "7th-8th": 4, "9th": 5, "10th": 6,
+        "11th": 7, "12th": 8, "HS-grad": 9, "Some-college": 10, "Assoc-voc": 11,
+        "Assoc-acdm": 12, "Bachelors": 13, "Masters": 14, "Prof-school": 15, "Doctorate": 16
+    }
+    education_options = list(education_map.keys())
+    education_level = st.selectbox("Education Level:", education_options, index=education_options.index(st.session_state['education_level']) if st.session_state['education_level'] in education_options else 0, key='education_level_input')
+    education_num = education_map[education_level]
 
-education_cols = [col for col in df.columns if col.startswith('Education_')]
-selected_education = st.sidebar.selectbox("Education", education_cols)
+    hours_per_week_col = [col for col in train_data.columns if 'Hours' in col and 'Week' in col][0]
+    hours_per_week = st.number_input("Hours per Week:", min_value=1, max_value=99, value=st.session_state['hours_per_week'], key='hours_per_week_input')
 
-marital_status_cols = [col for col in df.columns if col.startswith('Marital Status_')]
-selected_marital_status = st.sidebar.selectbox("Marital Status", marital_status_cols)
+    # Dropdown untuk Occupation
+    occupation_options = sorted(train_data['Occupation'].unique().tolist())
+    occupation_map = {option: 'Occupation_' + option.replace(' ', '_').lower() for option in occupation_options}
+    occupation_list = list(occupation_map.keys())
+    occupation_selection = st.selectbox("Occupation:", occupation_list, index=occupation_list.index(st.session_state['occupation']) if st.session_state['occupation'] in occupation_list else 0, key='occupation_input')
+    occupation_encoded = occupation_map[occupation_selection]
 
-occupation_cols = [col for col in df.columns if col.startswith('Occupation_')]
-selected_occupation = st.sidebar.selectbox("Occupation", occupation_cols)
+    # Dropdown untuk Marital Status
+    marital_status_options = sorted(train_data['Marital Status'].unique().tolist())
+    marital_status_map = {option: 'Marital Status_' + option.replace(' ', '_').lower() for option in marital_status_options}
+    marital_status_list = list(marital_status_map.keys())
+    marital_status_selection = st.selectbox("Marital Status:", marital_status_list, index=marital_status_list.index(st.session_state['marital_status']) if st.session_state['marital_status'] in marital_status_list else 0, key='marital_status_input')
+    marital_status_encoded = marital_status_map[marital_status_selection]
 
-relationship_cols = [col for col in df.columns if col.startswith('Relationship_')]
-selected_relationship = st.sidebar.selectbox("Relationship", relationship_cols)
+    # Dropdown untuk Relationship
+    relationship_options = sorted(train_data['Relationship'].unique().tolist())
+    relationship_map = {option: 'Relationship_' + option.replace(' ', '_').lower() for option in relationship_options}
+    relationship_list = list(relationship_map.keys())
+    relationship_selection = st.selectbox("Relationship:", relationship_list, index=relationship_list.index(st.session_state['relationship']) if st.session_state['relationship'] in relationship_list else 0, key='relationship_input')
+    relationship_encoded = relationship_map[relationship_selection]
 
-race_cols = [col for col in df.columns if col.startswith('Race_')]
-selected_race = st.sidebar.selectbox("Race", race_cols)
+    # Prediction and Reset buttons centered
+    predict_button_col, reset_button_col = st.columns(2)
+    with predict_button_col:
+        if st.button("Predict"):
+            user_input = pd.DataFrame(0, index=[0], columns=X_train.columns)
+            user_input['Age'] = age
+            user_input['EducationNum'] = education_num
+            user_input[hours_per_week_col] = hours_per_week
 
+            if occupation_encoded in user_input.columns:
+                user_input[occupation_encoded] = 1
+            if marital_status_encoded in user_input.columns:
+                user_input[marital_status_encoded] = 1
+            if relationship_encoded in user_input.columns:
+                user_input[relationship_encoded] = 1
 
-DT_model = DecisionTreeClassifier(max_depth=max_depth, random_state=42)
+            prediction_proba = xgb_model.predict_proba(user_input)[:, 1]
+            predicted_class = xgb_model.predict(user_input)[0]
+            prediction_label = "Income > $50K" if predicted_class == 1 else "Income <= $50K"
+            st.subheader("Prediction Result:")
+            st.write(f"Predicted Income: {prediction_label}")
 
-if st.button("Predict"):
-    # Train the model
-    DT_model.fit(X_train, y_train)
-    y_pred_proba_test = DT_model.predict_proba(X_test)
-    auc_score = roc_auc_score(y_test, y_pred_proba_test[:, 1])
-    st.write(f"AUC Score (on test data): {auc_score:.3f}")
+    with reset_button_col:
+        if st.button("Reset"):
+            st.session_state['age'] = int(train_data['Age'].mean())
+            st.session_state['education_level'] = "Bachelors"
+            st.session_state['hours_per_week'] = int(train_data[[col for col in train_data.columns if 'Hours' in col and 'Week' in col][0]].mean())
+            st.session_state['occupation'] = sorted(train_data['Occupation'].unique().tolist())[0]
+            st.session_state['marital_status'] = sorted(train_data['Marital Status'].unique().tolist())[0]
+            st.session_state['relationship'] = sorted(train_data['Relationship'].unique().tolist())[0]
+            st.rerun()
 
-    # Plotting ROC Curve
-    fpr, tpr, thresholds = roc_curve(y_test, y_pred_proba_test[:, 1])
-    plt.figure(figsize=(8, 6))
-    plt.plot(fpr, tpr)
-    plt.plot([0, 1], [0, 1], 'k--')
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('ROC Curve')
-    st.pyplot(plt)
+# Evaluation metrics (displayed in the main area)
+# st.subheader("Model Evaluation on Test Data:")
+# st.write(f"Akurasi: {accuracy:.2f}")
+# st.text(report)
 
-    # Make a single prediction based on user input
-    user_input = pd.DataFrame([[age, hours_per_week] + [0] * (len(X.columns) - 2)], columns=X.columns)
+st.markdown(
+    """
+    <div class="footer">
+        Dibuat Oleh Kelompok 5 - RAYAN
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
-    # Set the selected categorical features to 1
-    user_input[selected_workclass] = 1
-    user_input[selected_education] = 1
-    user_input[selected_marital_status] = 1
-    user_input[selected_occupation] = 1
-    user_input[selected_relationship] = 1
-    user_input[selected_race] = 1
-
-    prediction_proba = DT_model.predict_proba(user_input)
-    predicted_class = DT_model.predict(user_input)[0]
-    prediction_label = "Income > $50K" if predicted_class == 1 else "Income <= $50K"
-
-    st.subheader("Prediction based on your input:")
-    st.write(f"Probability of Income > $50K: {prediction_proba[0][1]:.2f}")
-    st.write(f"Predicted Income: {prediction_label}")
-
-if st.checkbox("Show Raw Data"):
-    st.subheader("Raw Data")
-    st.dataframe(df.head())
+# st.subheader("Average Income Distribution in Training Data:")
+# average_income = train_data['Income'].value_counts(normalize=True)
+# st.write(f"<=50K: {average_income[0]:.2f}")
+# st.write(f">50K: {average_income[1]:.2f}")
